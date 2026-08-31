@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>生字聽寫測驗 + 即時排行榜</title>
+  <!-- 引入 Hanzi Writer -->
+  <script src="https://cdn.jsdelivr.net/npm/hanzi-writer@3.5/dist/hanzi-writer.min.js"></script>
+  <!-- 引入 Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <!-- 引入 QR Code 產生器 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  
+  <style>
+    body {
+      font-family: "PingFang TC", "Microsoft JhengHei", Arial, sans-serif;
+      text-align: center;
+      padding: 15px 10px;
+      background-color: #f4f6f9;
+      margin: 0;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 16px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+    }
+    h1, h2 { color: #333; margin-top: 0; }
+    
+    input[type="text"], textarea {
+      width: 100%;
+      font-size: 16px;
+      padding: 10px;
+      box-sizing: border-box;
+      border: 2px solid #ccc;
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+    button {
+      font-size: 16px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: none;
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    .btn-start { width: 100%; background-color: #28a745; font-size: 18px; }
+    .btn-reset { background-color: #6c757d; }
+    .btn-next { background-color: #28a745; }
+
+    /* 預設區塊隱藏 */
+    #setup-section, #student-init-section, #quiz-section, #result-section { display: none; }
+
+    .question { font-size: 28px; font-weight: bold; margin: 10px 0; }
+    .pinyin { color: #e64a19; text-decoration: underline; }
+    
+    /* 米字格背景 */
+    #grid-container {
+      width: 280px;
+      height: 280px;
+      border: 3px solid #333;
+      margin: 0 auto 10px auto;
+      background-color: #fff;
+      position: relative;
+      background-image: 
+        linear-gradient(to right, transparent 49.5%, #ddd 49.5%, #ddd 50.5%, transparent 50.5%),
+        linear-gradient(to bottom, transparent 49.5%, #ddd 49.5%, #ddd 50.5%, transparent 50.5%);
+      touch-action: none;
+    }
+
+    /* 排行榜 */
+    .leaderboard {
+      margin-top: 25px;
+      border-top: 2px dashed #ddd;
+      padding-top: 15px;
+      text-align: left;
+    }
+    .leaderboard table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .leaderboard th, .leaderboard td { padding: 8px; text-align: center; border-bottom: 1px solid #eee; }
+    .leaderboard th { background-color: #f8f9fa; }
+    .status-msg { font-size: 20px; font-weight: bold; height: 30px; color: #28a745; }
+    
+    /* QR Code 顯示區 */
+    #qrcode { display: flex; justify-content: center; margin: 15px 0; }
+
+    /* 完成結算畫面 */
+    .result-box {
+      background: #e8f5e9;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    /* 徽章樣式 */
+    .badge-first { color: #d97706; font-weight: bold; font-size: 13px; background: #fef3c7; padding: 2px 6px; border-radius: 4px; }
+    .badge-perfect { color: #059669; font-weight: bold; font-size: 13px; background: #d1fae5; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    
+    <!-- 1. 教師控制台 (僅加 ?mode=teacher 時可見) -->
+    <div id="setup-section">
+      <h1>⚙️ 生字題目設定</h1>
+      <p style="font-size:14px; color:#666; text-align:left;">請輸入題目與答案（格式：<code>題目,答案</code>）：</p>
+      <textarea id="quiz-input" style="height: 120px;">「ㄩㄣˋ」染,暈
+「ㄅ一ˋ」業,畢
+「ㄑ一ㄥ」聽,傾</textarea>
+      
+      <button class="btn-start" onclick="saveAndGenerateQR()">儲存題目並產生學生 QR Code</button>
+
+      <div id="qr-area" style="display:none; margin-top:20px; border-top:1px solid #ccc; padding-top:15px;">
+        <h3>請學生用平板掃描以下 QR Code 進行測驗：</h3>
+        <div id="qrcode"></div>
+      </div>
+    </div>
+
+    <!-- 2. 學生登入區 -->
+    <div id="student-init-section">
+      <h1>✏️ 生字聽寫測驗</h1>
+      <p>請輸入你的座號或姓名：</p>
+      <input type="text" id="student-name" placeholder="例如：05號 或 小明">
+      <button class="btn-start" onclick="startStudentQuiz()">🎲 隨機出題並開始</button>
+    </div>
+
+    <!-- 3. 學生答題區 -->
+    <div id="quiz-section">
+      <div id="progress-text" style="color:#666;">第 1 / 1 題</div>
+      <div class="question" id="question-text">載入中...</div>
+      
+      <div id="grid-container"></div>
+      <div class="status-msg" id="status-text"></div>
+
+      <div style="display:flex; justify-content:center; gap:8px;">
+        <button class="btn-reset" onclick="resetCurrentQuiz()">清除重寫</button>
+        <button id="next-btn" class="btn-next" onclick="nextQuestion()">下一題</button>
+      </div>
+    </div>
+
+    <!-- 4. 挑戰完成/再試一次畫面 -->
+    <div id="result-section">
+      <div class="result-box">
+        <h2>🎉 挑戰完成！</h2>
+        <p id="result-summary" style="font-size: 18px;"></p>
+        <button class="btn-start" onclick="startStudentQuiz()">🔄 再挑戰一次（重新洗牌）</button>
+      </div>
+    </div>
+
+    <!-- 5. 即時排行榜 (答題區與結算區共用) -->
+    <div class="leaderboard" id="leaderboard-area" style="display:none;">
+      <h2>🏆 即時排行榜</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>名次</th>
+            <th>座號/姓名</th>
+            <th>最高得分</th>
+            <th>挑戰次數</th>
+          </tr>
+        </thead>
+        <tbody id="leaderboard-body">
+          <tr><td colspan="4">尚無資料...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <script>
+    var FIREBASE_URL = "https://jx-602-default-rtdb.firebaseio.com/";
+
+    var db = null;
+    var rawQuestions = []; // 原始題目
+    var quizQuestions = []; // 隨機洗牌後的題目
+    var currentIndex = 0;
+    var studentName = "";
+    var score = 0;
+    var totalMistakes = 0; // 統計錯筆畫次數
+    var currentAttempts = 1; // 學生目前的挑戰次數
+    var writer = null;
+
+    var urlParams = new URLSearchParams(window.location.search);
+    var isTeacher = urlParams.get('mode') === 'teacher' || urlParams.has('teacher');
+
+    window.onload = function() {
+      try {
+        if (!firebase.apps.length) {
+          firebase.initializeApp({ databaseURL: FIREBASE_URL });
+        }
+        db = firebase.database();
+      } catch (e) {
+        alert("Firebase 資料庫連線失敗，請檢查網路連線。");
+      }
+
+      if (isTeacher) {
+        document.getElementById('setup-section').style.display = 'block';
+        if(localStorage.getItem('quiz_data')) {
+          document.getElementById('quiz-input').value = localStorage.getItem('quiz_data');
+        }
+      } else {
+        loadSavedQuestionsAndStartStudent();
+      }
+    };
+
+    function saveAndGenerateQR() {
+      var rawText = document.getElementById('quiz-input').value.trim();
+      if (!rawText) {
+        alert("請輸入題目與答案！");
+        return;
+      }
+
+      localStorage.setItem('quiz_data', rawText);
+      var studentUrl = window.location.href.split('?')[0];
+
+      document.getElementById('qr-area').style.display = 'block';
+      document.getElementById('qrcode').innerHTML = "";
+      new QRCode(document.getElementById("qrcode"), {
+        text: studentUrl,
+        width: 200,
+        height: 200
+      });
+      
+      alert("題目已儲存！請將下方 QR Code 投放到大螢幕供學生掃描。");
+    }
+
+    function loadSavedQuestionsAndStartStudent() {
+      var rawText = localStorage.getItem('quiz_data');
+      if (!rawText) {
+        rawText = "「ㄩㄣˋ」染,暈\n「ㄅ一ˋ」業,畢\n「ㄑ一ㄥ」聽,傾";
+      }
+
+      rawQuestions = [];
+      var lines = rawText.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var parts = lines[i].split(/[,，]/);
+        if (parts.length >= 2) {
+          rawQuestions.push({ prompt: parts[0].trim(), answer: parts[1].trim().charAt(0) });
+        }
+      }
+
+      document.getElementById('student-init-section').style.display = 'block';
+      document.getElementById('leaderboard-area').style.display = 'block';
+      listenLeaderboard();
+    }
+
+    // 費雪-耶茲隨機洗牌演算法
+    function shuffleArray(array) {
+      var arr = array.slice();
+      for (var i = arr.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+      }
+      return arr;
+    }
+
+    // 學生開始/重新挑戰
+    function startStudentQuiz() {
+      if(!studentName) {
+        studentName = document.getElementById('student-name').value.trim();
+      }
+      if (!studentName) {
+        alert("請輸入座號或姓名！");
+        return;
+      }
+
+      // 讀取並更新挑戰次數
+      if (db) {
+        db.ref('leaderboard/' + studentName).once('value').then(function(snapshot) {
+          var oldData = snapshot.val() || {};
+          currentAttempts = (oldData.attempts || 0) + 1;
+
+          db.ref('leaderboard/' + studentName).update({
+            name: studentName,
+            attempts: currentAttempts,
+            updatedAt: Date.now()
+          });
+        });
+      }
+
+      // 1. 洗牌題目
+      quizQuestions = shuffleArray(rawQuestions);
+      
+      // 2. 重置狀態
+      currentIndex = 0;
+      score = 0;
+      totalMistakes = 0;
+
+      // 3. 切換顯示畫面
+      document.getElementById('student-init-section').style.display = 'none';
+      document.getElementById('result-section').style.display = 'none';
+      document.getElementById('quiz-section').style.display = 'block';
+
+      updateScoreInDB(0);
+      loadQuestion(currentIndex);
+    }
+
+    function loadQuestion(index) {
+      var q = quizQuestions[index];
+      document.getElementById('progress-text').innerText = "第 " + (index + 1) + " / " + quizQuestions.length + " 題 (第 " + currentAttempts + " 次挑戰)";
+      document.getElementById('question-text').innerHTML = "請寫出：<span class='pinyin'>" + q.prompt + "</span>";
+      document.getElementById('status-text').innerText = "";
+      document.getElementById('grid-container').innerHTML = "";
+
+      writer = HanziWriter.create('grid-container', q.answer, {
+        width: 280, height: 280, padding: 10,
+        showOutline: false, showCharacter: false
+      });
+
+      writer.quiz({
+        onComplete: function(summary) {
+          document.getElementById('status-text').innerText = "🎉 答對了！";
+          score = index + 1;
+          if (summary && summary.totalMistakes) {
+            totalMistakes += summary.totalMistakes;
+          }
+          updateScoreInDB(score);
+        }
+      });
+    }
+
+    function updateScoreInDB(currentScore) {
+      if (db && studentName) {
+        db.ref('leaderboard/' + studentName).once('value').then(function(snapshot) {
+          var oldData = snapshot.val() || {};
+          var maxScore = Math.max(currentScore, oldData.score || 0);
+          
+          var updates = {
+            score: maxScore,
+            updatedAt: Date.now()
+          };
+
+          // 若為第一次挑戰，記錄首次得分 (firstTryScore)
+          if (currentAttempts === 1) {
+            updates.firstTryScore = Math.max(currentScore, oldData.firstTryScore || 0);
+          }
+
+          db.ref('leaderboard/' + studentName).update(updates);
+        });
+      }
+    }
+
+    function listenLeaderboard() {
+      if(!db) return;
+      db.ref('leaderboard').on('value', function(snapshot) {
+        var data = snapshot.val();
+        var list = [];
+        for (var key in data) { list.push(data[key]); }
+
+        // 排序規則：1.最高分高者在前 2.得分相同時，挑戰次數少者在前 3.再相同看時間
+        list.sort(function(a, b) {
+          if (b.score !== a.score) return b.score - a.score;
+          var aAttempts = a.attempts || 1;
+          var bAttempts = b.attempts || 1;
+          if (aAttempts !== bAttempts) return aAttempts - bAttempts;
+          return a.updatedAt - b.updatedAt;
+        });
+
+        var html = "";
+        for (var i = 0; i < list.length; i++) {
+          var p = list[i];
+          var totalQ = rawQuestions.length;
+          var badgeHtml = "";
+
+          // 徽章判斷邏輯
+          if (p.score === totalQ && totalQ > 0) {
+            if ((p.attempts || 1) === 1) {
+              badgeHtml = " <span class='badge-first'>⚡ 一次通關</span>";
+            } else {
+              badgeHtml = " <span class='badge-perfect'>👑 滿分</span>";
+            }
+          }
+
+          html += "<tr>" +
+            "<td>" + (i + 1) + "</td>" +
+            "<td>" + p.name + badgeHtml + "</td>" +
+            "<td>" + p.score + " / " + totalQ + "</td>" +
+            "<td>第 " + (p.attempts || 1) + " 次</td>" +
+          "</tr>";
+        }
+        document.getElementById('leaderboard-body').innerHTML = html || "<tr><td colspan='4'>尚無資料...</td></tr>";
+      });
+    }
+
+    function resetCurrentQuiz() { loadQuestion(currentIndex); }
+    
+    function nextQuestion() {
+      if (currentIndex < quizQuestions.length - 1) {
+        currentIndex++;
+        loadQuestion(currentIndex);
+      } else {
+        // 完成全數題目，切換至結算畫面
+        document.getElementById('quiz-section').style.display = 'none';
+        document.getElementById('result-section').style.display = 'block';
+        
+        var summaryText = "你已完成第 " + currentAttempts + " 次挑戰！<br>";
+        if (totalMistakes === 0) {
+          summaryText += "🌟 <strong style='color:#28a745;'>太厲害了！本次完全零失誤全對！</strong>";
+        } else {
+          summaryText += "本次筆畫過程共寫錯了 " + totalMistakes + " 次。<br>想挑戰更完美、零失誤嗎？再試一次吧！";
+        }
+        document.getElementById('result-summary').innerHTML = summaryText;
+      }
+    }
+  </script>
+</body>
+</html>
