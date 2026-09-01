@@ -114,7 +114,7 @@
 「ㄅ一ˋ」業,畢
 「ㄑ一ㄥ」聽,傾</textarea>
       
-      <button class="btn-start" onclick="saveAndGenerateQR()">儲存題目並產生學生 QR Code</button>
+      <button class="btn-start" onclick="saveAndGenerateQR()">☁️ 同步題目至雲端並產生 QR Code</button>
 
       <div id="qr-area" style="display:none; margin-top:20px; border-top:1px solid #ccc; padding-top:15px;">
         <h3>請學生用平板掃描以下 QR Code 進行測驗：</h3>
@@ -125,9 +125,12 @@
     <!-- 2. 學生登入區 -->
     <div id="student-init-section">
       <h1>✏️ 生字聽寫測驗</h1>
-      <p>請輸入你的座號或姓名：</p>
-      <input type="text" id="student-name" placeholder="例如：05號 或 小明">
-      <button class="btn-start" onclick="startStudentQuiz()">🎲 隨機出題並開始</button>
+      <p id="loading-msg" style="color:#007bff; font-weight:bold;">正在讀取最新題目...</p>
+      <div id="login-box" style="display:none;">
+        <p>請輸入你的座號或姓名：</p>
+        <input type="text" id="student-name" placeholder="例如：05號 或 小明">
+        <button class="btn-start" onclick="startStudentQuiz()">🎲 隨機出題並開始</button>
+      </div>
     </div>
 
     <!-- 3. 學生答題區 -->
@@ -201,14 +204,20 @@
 
       if (isTeacher) {
         document.getElementById('setup-section').style.display = 'block';
-        if(localStorage.getItem('quiz_data')) {
-          document.getElementById('quiz-input').value = localStorage.getItem('quiz_data');
+        // 從 Firebase 讀取上次設定的題目
+        if (db) {
+          db.ref('quiz_data_raw').once('value').then(function(snapshot) {
+            if (snapshot.exists()) {
+              document.getElementById('quiz-input').value = snapshot.val();
+            }
+          });
         }
       } else {
         loadSavedQuestionsAndStartStudent();
       }
     };
 
+    // 儲存題目並同步至 Firebase 雲端
     function saveAndGenerateQR() {
       var rawText = document.getElementById('quiz-input').value.trim();
       if (!rawText) {
@@ -216,37 +225,51 @@
         return;
       }
 
-      localStorage.setItem('quiz_data', rawText);
-      var studentUrl = window.location.href.split('?')[0];
-
-      document.getElementById('qr-area').style.display = 'block';
-      document.getElementById('qrcode').innerHTML = "";
-      new QRCode(document.getElementById("qrcode"), {
-        text: studentUrl,
-        width: 200,
-        height: 200
-      });
-      
-      alert("題目已儲存！請將下方 QR Code 投放到大螢幕供學生掃描。");
+      if (db) {
+        db.ref('quiz_data_raw').set(rawText, function(error) {
+          if (error) {
+            alert("同步失敗，請檢查網路狀態。");
+          } else {
+            var studentUrl = window.location.href.split('?')[0];
+            document.getElementById('qr-area').style.display = 'block';
+            document.getElementById('qrcode').innerHTML = "";
+            new QRCode(document.getElementById("qrcode"), {
+              text: studentUrl,
+              width: 200,
+              height: 200
+            });
+            alert("✅ 題目已成功同步至雲端！學生重新開啟頁面即可取得新題目。");
+          }
+        });
+      }
     }
 
+    // 學生端從雲端載入題目
     function loadSavedQuestionsAndStartStudent() {
-      var rawText = localStorage.getItem('quiz_data');
-      if (!rawText) {
-        rawText = "「ㄩㄣˋ」染,暈\n「ㄅ一ˋ」業,畢\n「ㄑ一ㄥ」聽,傾";
-      }
-
-      rawQuestions = [];
-      var lines = rawText.split('\n');
-      for (var i = 0; i < lines.length; i++) {
-        var parts = lines[i].split(/[,，]/);
-        if (parts.length >= 2) {
-          rawQuestions.push({ prompt: parts[0].trim(), answer: parts[1].trim().charAt(0) });
-        }
-      }
-
       document.getElementById('student-init-section').style.display = 'block';
       document.getElementById('leaderboard-area').style.display = 'block';
+
+      if (db) {
+        db.ref('quiz_data_raw').on('value', function(snapshot) {
+          var rawText = snapshot.val();
+          if (!rawText) {
+            rawText = "「ㄩㄣˋ」染,暈\n「ㄅ一ˋ」業,畢\n「ㄑ一ㄥ」聽,傾";
+          }
+
+          rawQuestions = [];
+          var lines = rawText.split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            var parts = lines[i].split(/[,，]/);
+            if (parts.length >= 2) {
+              rawQuestions.push({ prompt: parts[0].trim(), answer: parts[1].trim().charAt(0) });
+            }
+          }
+
+          document.getElementById('loading-msg').style.display = 'none';
+          document.getElementById('login-box').style.display = 'block';
+        });
+      }
+
       listenLeaderboard();
     }
 
